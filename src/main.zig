@@ -55,6 +55,7 @@ const Context = struct {
 const Command = struct {
     func: *const fn (*Context) Error!void,
     name: []const u8,
+    docs: ?[]const u8 = null,
 };
 
 const commands = [_]Command{
