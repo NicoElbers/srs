@@ -14,9 +14,7 @@ pub fn init(stdin: *Reader, stdout: *Writer, config: Config) Console {
     };
 }
 
-pub fn deinit(self: *Console) Writer.Error!void {
-    try self.flush();
-
+pub fn deinit(self: *Console) void {
     self.* = undefined;
 }
 

@@ -1,6 +1,57 @@
 var stdin_buf: [4096]u8 = undefined;
 var stdout_buf: [4096]u8 = undefined;
 
+/// Entry point, aquires no resources by itself and does some nice error handling
+pub fn main() void {
+    var stdin_reader: File.Reader = .initStreaming(.stdin(), &stdin_buf);
+    var stdout_writer: File.Writer = .initStreaming(.stdout(), &stdout_buf);
+    const tty: std.Io.tty.Config = .detect(.stdout());
+
+    cliWrapper(
+        &stdin_reader.interface,
+        &stdout_writer.interface,
+        tty,
+    ) catch |err| switch (err) {
+        error.EndOfStream => std.process.exit(1), // just exit, don't report
+        error.WriteFailed => {
+            if (@errorReturnTrace()) |st| {
+                std.debug.dumpStackTrace(st);
+            }
+
+            std.process.fatal("stdout errored with {t}", .{stdout_writer.err.?});
+        },
+        error.ReadFailed => {
+            if (@errorReturnTrace()) |st| {
+                std.debug.dumpStackTrace(st);
+            }
+
+            std.process.fatal("stdin errored with {t}", .{stdin_reader.err.?});
+        },
+        error.OutOfMemory => {
+            if (@errorReturnTrace()) |st| {
+                std.debug.dumpStackTrace(st);
+            }
+
+            std.process.fatal("Out Of memory", .{});
+        },
+        else => {
+            if (@errorReturnTrace()) |st| {
+                std.debug.dumpStackTrace(st);
+            }
+
+            std.process.fatal("Encountered an unexpected fatal error: {t}", .{err});
+        },
+    };
+}
+
+const Context = struct {
+    gpa: Allocator,
+    console: *Console,
+    save: *Save,
+    keep_running: bool,
+    err: ?anyerror,
+};
+
 const Command = struct {
     func: *const fn (*Context) Error!void,
     name: []const u8,
@@ -16,64 +67,45 @@ const commands = [_]Command{
     .{ .name = "exit", .func = exitFn },
 };
 
-pub fn main() !void {
+const prefix = "> ";
+
+/// This function wraps all resource allocation
+fn cliWrapper(
+    stdin: *Reader,
+    stdout: *Writer,
+    tty: Config,
+) !void {
     var dbg_inst: std.heap.DebugAllocator(.{}) = .init;
-    defer assert(dbg_inst.deinit() == .ok);
+    defer _ = dbg_inst.deinit();
     const gpa = dbg_inst.allocator();
-
-    var stdin_reader: File.Reader = .initStreaming(.stdin(), &stdin_buf);
-    var stdout_writer: File.Writer = .initStreaming(.stdout(), &stdout_buf);
-    const tty: std.Io.tty.Config = .detect(.stdout());
-
-    var console: Console = .init(
-        &stdin_reader.interface,
-        &stdout_writer.interface,
-        tty,
-    );
 
     var save: Save = .empty;
     defer save.deinit(gpa);
+
+    var console: Console = .init(stdin, stdout, tty);
+    defer console.deinit();
 
     var ctx: Context = .{
         .gpa = gpa,
         .console = &console,
         .save = &save,
         .keep_running = true,
+        .err = null,
     };
 
-    try loadFn(&ctx);
-    try helpFn(&ctx);
-
-    juicyMain(&ctx) catch |err| {
-        try console.deinit();
-        save.deinit(gpa);
-
-        assert(dbg_inst.deinit() == .ok); // make sure we didn't leak first
-        switch (err) {
-            error.WriteFailed => std.process.fatal("stdout error: {t}", .{stdout_writer.err.?}),
-            error.ReadFailed => std.process.fatal("stdin error: {t}", .{stdin_reader.err.?}),
-            error.EndOfStream => std.process.exit(1), // just exit, don't report
-            error.OutOfMemory => std.process.fatal("Out Of memory", .{}),
-        }
+    cliCommandLoop(&ctx) catch |err| return switch (err) {
+        error.Unhandled => ctx.err orelse err,
+        else => err,
     };
-
-    try saveFn(&ctx);
-    try console.deinit();
 }
 
-const Context = struct {
-    gpa: Allocator,
-    console: *Console,
-    save: *Save,
-    keep_running: bool,
-};
-
-const prefix = "> ";
-
-const Error = Reader.Error || Writer.Error || Allocator.Error;
-pub fn juicyMain(ctx: *Context) Error!void {
+pub const Error = Reader.Error || Writer.Error || Allocator.Error || error{Unhandled};
+fn cliCommandLoop(ctx: *Context) Error!void {
     const console = ctx.console;
     const save = ctx.save;
+
+    try loadFn(ctx);
+    try helpFn(ctx);
 
     const eql = std.ascii.eqlIgnoreCase;
     loop: while (ctx.keep_running) {
@@ -97,6 +129,8 @@ pub fn juicyMain(ctx: *Context) Error!void {
             try helpFn(ctx);
         }
     }
+
+    try saveFn(ctx);
 }
 
 fn helpFn(ctx: *Context) Error!void {
