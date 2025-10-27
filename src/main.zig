@@ -13,6 +13,7 @@ const commands = [_]Command{
     .{ .name = "save", .func = saveFn },
     .{ .name = "load", .func = loadFn },
     .{ .name = "help", .func = helpFn },
+    .{ .name = "exit", .func = exitFn },
 };
 
 pub fn main() !void {
@@ -107,6 +108,9 @@ fn helpFn(ctx: *Context) Error!void {
     try console.stdout.flush();
 }
 
+fn exitFn(ctx: *Context) Error!void {
+    ctx.keep_running = false;
+}
 
 fn saveFn(ctx: *Context) Error!void {
     const file = std.fs.cwd().createFileZ("test.save", .{}) catch @panic("a");
