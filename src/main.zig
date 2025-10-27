@@ -1,6 +1,20 @@
 var stdin_buf: [4096]u8 = undefined;
 var stdout_buf: [4096]u8 = undefined;
 
+const Command = struct {
+    func: *const fn (*Context) Error!void,
+    name: []const u8,
+};
+
+const commands = [_]Command{
+    .{ .name = "list", .func = listFn },
+    .{ .name = "add", .func = addFn },
+    .{ .name = "ask", .func = askFn },
+    .{ .name = "save", .func = saveFn },
+    .{ .name = "load", .func = loadFn },
+    .{ .name = "help", .func = helpFn },
+};
+
 pub fn main() !void {
     var dbg_inst: std.heap.DebugAllocator(.{}) = .init;
     defer assert(dbg_inst.deinit() == .ok);
@@ -23,6 +37,7 @@ pub fn main() !void {
         .gpa = gpa,
         .console = &console,
         .save = &save,
+        .keep_running = true,
     };
 
     juicyMain(&ctx) catch |err| {
@@ -45,6 +60,7 @@ const Context = struct {
     gpa: Allocator,
     console: *Console,
     save: *Save,
+    keep_running: bool,
 };
 
 const prefix = "> ";
@@ -52,57 +68,74 @@ const prefix = "> ";
 const Error = Reader.Error || Writer.Error || Allocator.Error;
 pub fn juicyMain(ctx: *Context) Error!void {
     const console = ctx.console;
+    const save = ctx.save;
 
     const eql = std.ascii.eqlIgnoreCase;
-    while (true) {
-        const command = try console.ask(&.{prefix});
+    loop: while (ctx.keep_running) {
+        const op = try console.ask(&.{prefix});
 
-        if (eql("list", command)) {
-            try listQuestions(ctx);
-        } else if (eql("add", command)) {
-            try addItem(ctx);
-        } else if (eql("ask", command)) {
-            try askItems(ctx);
-        } else if (eql("save", command)) {
-            const file = std.fs.cwd().createFileZ("test.save", .{}) catch @panic("a");
-            defer file.close();
+        for (commands) |command| {
+            if (!eql(op, command.name)) continue;
 
-            var buf: [1024]u8 = undefined;
-            var file_writer: std.fs.File.Writer = .init(file, &buf);
-
-            ctx.save.serialize(&file_writer.interface) catch @panic("a");
-
-            file_writer.interface.flush() catch unreachable;
-        } else if (eql("load", command)) {
-            const file = std.fs.cwd().openFileZ("test.save", .{}) catch @panic("a");
-            defer file.close();
-
-            var buf: [1024]u8 = undefined;
-            var file_reader: std.fs.File.Reader = .init(file, &buf);
-
-            ctx.save.deinit(ctx.gpa);
-            ctx.save.* = Save.deserialize(ctx.gpa, &file_reader.interface) catch @panic("a");
-        } else if (eql("warp", command)) {
+            try command.func(ctx);
+            continue :loop;
+        } else if (eql(op, "warp")) { // NOTE: private commands
             const num_txt = try console.ask(&.{ "How much? (H)\n", prefix });
             const num = std.fmt.parseInt(u32, num_txt, 0) catch @panic("Fuck you");
 
-            const srs_list: []Save.Srs = ctx.save.items.items(.srs);
+            const srs_list: []Save.Srs = save.items.items(.srs);
             for (srs_list) |*srs| {
                 srs.deadline_hour -= num;
             }
         } else {
-            try help(ctx);
+            try console.printLn("Command '{s}' not found", .{op});
+            try helpFn(ctx);
         }
     }
 }
 
-fn help(ctx: *Context) Error!void {
-    try ctx.console.writeLn("Help:");
+fn helpFn(ctx: *Context) Error!void {
+    const console = ctx.console;
 
-    try ctx.console.print("Not done yet\n", .{});
+    try console.writeLn("Commands:");
+
+    for (commands) |command| {
+        try console.printLn("\t{s}", .{command.name});
+    }
+
+    try console.write("\n");
+    try console.stdout.flush();
 }
 
-fn askItems(ctx: *Context) Error!void {
+
+fn saveFn(ctx: *Context) Error!void {
+    const file = std.fs.cwd().createFileZ("test.save", .{}) catch @panic("a");
+    defer file.close();
+
+    var buf: [1024]u8 = undefined;
+    var file_writer: std.fs.File.Writer = .init(file, &buf);
+
+    ctx.save.serialize(&file_writer.interface) catch @panic("a");
+
+    file_writer.interface.flush() catch unreachable;
+
+    try ctx.console.printLn("Saved {d} items!", .{ctx.save.items.len});
+}
+
+fn loadFn(ctx: *Context) Error!void {
+    const file = std.fs.cwd().openFileZ("test.save", .{}) catch @panic("a");
+    defer file.close();
+
+    var buf: [1024]u8 = undefined;
+    var file_reader: std.fs.File.Reader = .init(file, &buf);
+
+    ctx.save.deinit(ctx.gpa);
+    ctx.save.* = Save.deserialize(ctx.gpa, &file_reader.interface) catch @panic("a");
+
+    try ctx.console.printLn("Loaded {d} items!", .{ctx.save.items.len});
+}
+
+fn askFn(ctx: *Context) Error!void {
     const console = ctx.console;
     const save = ctx.save;
     const gpa = ctx.gpa;
@@ -177,7 +210,7 @@ fn askItems(ctx: *Context) Error!void {
     }
 }
 
-fn addItem(ctx: *Context) Error!void {
+fn addFn(ctx: *Context) Error!void {
     const console = ctx.console;
     const save = ctx.save;
     const gpa = ctx.gpa;
@@ -190,7 +223,7 @@ fn addItem(ctx: *Context) Error!void {
     try save.putSimpleQuestion(gpa, question, answer);
 }
 
-fn listQuestions(ctx: *Context) Error!void {
+fn listFn(ctx: *Context) Error!void {
     const console = ctx.console;
     const save = ctx.save;
 
