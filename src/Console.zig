@@ -15,9 +15,13 @@ pub fn init(stdin: *Reader, stdout: *Writer, config: Config) Console {
 }
 
 pub fn deinit(self: *Console) Writer.Error!void {
-    try self.stdout.flush();
+    try self.flush();
 
     self.* = undefined;
+}
+
+pub fn flush(self: *Console) Writer.Error!void {
+    try self.stdout.flush();
 }
 
 const ReadLineError = error{ ReadFailed, StreamTooLong };
