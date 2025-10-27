@@ -41,6 +41,9 @@ pub fn main() !void {
         .keep_running = true,
     };
 
+    try loadFn(&ctx);
+    try helpFn(&ctx);
+
     juicyMain(&ctx) catch |err| {
         try console.deinit();
         save.deinit(gpa);
@@ -54,6 +57,7 @@ pub fn main() !void {
         }
     };
 
+    try saveFn(&ctx);
     try console.deinit();
 }
 
