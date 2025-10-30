@@ -40,7 +40,7 @@ test readLine {
     try std.testing.expectEqualStrings("end", (try console.readLine()).?);
     try std.testing.expectEqual(null, try console.readLine());
 
-    try console.deinit();
+    console.deinit();
 }
 
 pub fn write(self: *Console, bytes: []const u8) Writer.Error!void {
@@ -102,7 +102,7 @@ test ask {
     try std.testing.expectEqualStrings(prefix ++ question, stdout.buffered());
     try std.testing.expectError(error.EndOfStream, console.ask(&.{ prefix, question }));
 
-    try console.deinit();
+    console.deinit();
 }
 
 pub fn print(self: *Console, comptime fmt: []const u8, args: anytype) Writer.Error!void {
