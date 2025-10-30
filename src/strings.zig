@@ -12,6 +12,7 @@ pub const StringTable = struct {
     pub fn deinit(st: *StringTable, gpa: Allocator) void {
         st.bytes.deinit(gpa);
         st.map.deinit(gpa);
+
         st.* = undefined;
     }
 
@@ -21,7 +22,7 @@ pub const StringTable = struct {
     /// * bytes: ArrayList(u8)
     /// * map: AutoArrayHashMap(String, StringItem)
     /// * string_counter: u32
-    pub fn serialize(st: *const StringTable, w: *Writer) Writer.Error!void {
+    pub fn serialize(st: *const StringTable, w: *Writer) SerializationError!void {
         try serialization.serializeArrayList(u8, &st.bytes, w);
         try serialization.serializeArrayHashMap(AutoArrayHashMap(String, StringItem), &st.map, w);
         try w.writeInt(u32, st.string_counter, .little);
@@ -33,11 +34,11 @@ pub const StringTable = struct {
     /// * bytes: ArrayList(u8)
     /// * map: AutoArrayHashMap(String, StringItem)
     /// * string_counter: u32
-    pub fn deserialize(gpa: Allocator, r: *Reader) (Reader.Error || Allocator.Error)!StringTable {
-        var bytes = try serialization.deserializeArrayList(u8, gpa, r);
+    pub fn deserialize(gpa: Allocator, r: *Reader) DeserializationError!StringTable {
+        var bytes = try deserializeArrayList(u8, gpa, r);
         errdefer bytes.deinit(gpa);
 
-        var map = try serialization.deserializeArrayHashMap(AutoArrayHashMap(String, StringItem), gpa, r);
+        var map = try deserializeArrayHashMap(AutoArrayHashMap(String, StringItem), gpa, r);
         errdefer map.deinit(gpa);
 
         const string_counter = try r.takeInt(u32, .little);
@@ -221,6 +222,18 @@ const std = @import("std");
 const serialization = @import("serialization.zig");
 
 const assert = std.debug.assert;
+
+const serializeArrayList = serialization.serializeArrayList;
+const deserializeArrayList = serialization.deserializeArrayList;
+
+const serializeMultiArrayList = serialization.serializeMultiArrayList;
+const deserializeMultiArrayList = serialization.deserializeMultiArrayList;
+
+const serializeArrayHashMap = serialization.serializeArrayHashMap;
+const deserializeArrayHashMap = serialization.deserializeArrayHashMap;
+
+const SerializationError = serialization.SerializationError;
+const DeserializationError = serialization.DeserializationError;
 
 const ArrayList = std.ArrayList;
 const AutoArrayHashMap = std.AutoArrayHashMapUnmanaged;

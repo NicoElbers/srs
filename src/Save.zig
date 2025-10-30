@@ -32,11 +32,11 @@ pub fn deinit(s: *Save, gpa: Allocator) void {
 /// * extra: ArrayList(Untyped)
 /// * map: AutoArrayHashMap(Index, u32)
 /// * index_counter: u32
-pub fn serialize(save: *Save, w: *Writer) Writer.Error!void {
+pub fn serialize(save: *Save, w: *Writer) SerializationError!void {
     try save.string_table.serialize(w);
-    try serialization.serializeMultiArrayList(Item, &save.items, w);
-    try serialization.serializeArrayList(Untyped, &save.extra, w);
-    try serialization.serializeArrayHashMap(AutoArrayHashMap(Index, u32), &save.map, w);
+    try serializeMultiArrayList(Item, &save.items, w);
+    try serializeArrayList(Untyped, &save.extra, w);
+    try serializeArrayHashMap(AutoArrayHashMap(Index, u32), &save.map, w);
     try w.writeInt(u32, save.index_counter, .little);
 }
 
@@ -48,17 +48,17 @@ pub fn serialize(save: *Save, w: *Writer) Writer.Error!void {
 /// * extra: ArrayList(Untyped)
 /// * map: AutoArrayHashMap(Index, u32)
 /// * index_counter: u32
-pub fn deserialize(gpa: Allocator, r: *Reader) (Reader.Error || Allocator.Error)!Save {
+pub fn deserialize(gpa: Allocator, r: *Reader) DeserializationError!Save {
     var string_table = try StringTable.deserialize(gpa, r);
     errdefer string_table.deinit(gpa);
 
-    var items = try serialization.deserializeMultiArrayList(Item, gpa, r);
+    var items = try deserializeMultiArrayList(Item, gpa, r);
     errdefer items.deinit(gpa);
 
-    var extra = try serialization.deserializeArrayList(Untyped, gpa, r);
+    var extra = try deserializeArrayList(Untyped, gpa, r);
     errdefer extra.deinit(gpa);
 
-    var map = try serialization.deserializeArrayHashMap(AutoArrayHashMap(Index, u32), gpa, r);
+    var map = try deserializeArrayHashMap(AutoArrayHashMap(Index, u32), gpa, r);
     errdefer map.deinit(gpa);
 
     const index_counter = try r.takeInt(u32, .little);
@@ -70,6 +70,43 @@ pub fn deserialize(gpa: Allocator, r: *Reader) (Reader.Error || Allocator.Error)
         .map = map,
         .index_counter = index_counter,
     };
+}
+
+test serialize {
+    const gpa = std.testing.allocator;
+
+    var save: Save = .empty;
+    defer save.deinit(gpa);
+
+    const question = "What is the answer to life, the universe, and everything?";
+    const answer = "42, obviously";
+
+    const q = try save.string_table.put(gpa, question);
+    const a = try save.string_table.put(gpa, answer);
+
+    try save.putSimpleQuestion(gpa, q, a);
+
+    var first: Writer.Allocating = .init(gpa);
+    defer first.deinit();
+
+    try save.serialize(&first.writer);
+
+    var copy = blk: {
+        var fr: Reader = .fixed(first.written());
+        break :blk try Save.deserialize(gpa, &fr);
+    };
+    defer copy.deinit(gpa);
+
+    try std.testing.expectEqual(save.index_counter, copy.index_counter);
+    try std.testing.expectEqualDeep(save.extra, copy.extra);
+
+    var second: Writer.Allocating = .init(gpa);
+    defer second.deinit();
+
+    try copy.serialize(&second.writer);
+
+    // serialization idempotency
+    try std.testing.expectEqualSlices(u8, first.written(), second.written());
 }
 
 pub const Item = struct {
@@ -84,6 +121,7 @@ pub const Item = struct {
     };
 
     type: Type,
+    stage: u8,
     srs: Srs,
     left: Untyped,
     right: Untyped,
@@ -114,12 +152,11 @@ pub const Item = struct {
 };
 
 pub const Srs = struct {
-    stage: u8 = 0,
     deadline_hour: u32,
 
-    pub fn nextDeadline(srs: Srs, success: bool) Srs {
+    pub fn nextDeadline(old_stage: u8, success: bool) struct { u8, Srs } {
         const stage: f64 = blk: {
-            const stage: f64 = @floatFromInt(srs.stage);
+            const stage: f64 = @floatFromInt(old_stage);
             break :blk @round(switch (success) {
                 true => @min(7, stage + 1),
                 false => @sqrt(stage),
@@ -140,8 +177,8 @@ pub const Srs = struct {
         const hour_timeout: u32 = @intFromFloat(@ceil(next_timeout));
 
         return .{
-            .stage = @intFromFloat(stage),
-            .deadline_hour = now_hour + hour_timeout,
+            @intFromFloat(stage),
+            .{ .deadline_hour = now_hour + hour_timeout },
         };
     }
 
@@ -397,13 +434,11 @@ pub fn putStringSlice(s: *Save, gpa: Allocator, string_slice: []const String) Al
 pub fn putSimpleQuestion(s: *Save, gpa: Allocator, question: String, answer: String) Allocator.Error!void {
     try s.items.append(gpa, .{
         .type = .question_simple,
+        .stage = 0,
         .srs = .fromNow(),
         .left = .cast(question),
         .right = .cast(answer),
     });
-
-    std.log.info("Question: {d}", .{@intFromEnum(question)});
-    std.log.info("Answer: {d}", .{@intFromEnum(answer)});
 }
 
 test {
@@ -415,6 +450,18 @@ const strings = @import("strings.zig");
 const serialization = @import("serialization.zig");
 
 const assert = std.debug.assert;
+
+const serializeArrayList = serialization.serializeArrayList;
+const deserializeArrayList = serialization.deserializeArrayList;
+
+const serializeMultiArrayList = serialization.serializeMultiArrayList;
+const deserializeMultiArrayList = serialization.deserializeMultiArrayList;
+
+const serializeArrayHashMap = serialization.serializeArrayHashMap;
+const deserializeArrayHashMap = serialization.deserializeArrayHashMap;
+
+const SerializationError = serialization.SerializationError;
+const DeserializationError = serialization.DeserializationError;
 
 const Allocator = std.mem.Allocator;
 const ArrayList = std.ArrayList;
