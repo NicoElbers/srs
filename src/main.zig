@@ -1,6 +1,11 @@
 var stdin_buf: [4096]u8 = undefined;
 var stdout_buf: [4096]u8 = undefined;
 
+// TODO: factor all this into a config file
+const prefix = "> ";
+const app_name = "srs"; // TODO: think of a better name
+const saves_folder = "saves";
+
 /// Entry point, aquires no resources by itself and does some nice error handling
 pub fn main() void {
     var stdin_reader: File.Reader = .initStreaming(.stdin(), &stdin_buf);
@@ -68,8 +73,6 @@ const commands = [_]Command{
     .{ .name = "exit", .func = exitFn },
 };
 
-const prefix = "> ";
-
 /// This function wraps all resource allocation
 fn cliWrapper(
     stdin: *Reader,
@@ -98,6 +101,8 @@ fn cliWrapper(
         error.Unhandled => ctx.err orelse err,
         else => err,
     };
+
+    try console.flush();
 }
 
 pub const Error = Reader.Error || Writer.Error || Allocator.Error || error{Unhandled};
@@ -151,31 +156,148 @@ fn exitFn(ctx: *Context) Error!void {
     ctx.keep_running = false;
 }
 
+fn appDataDir(ctx: *Context) Error!Dir {
+    const gpa = ctx.gpa;
+
+    // TODO: allow data dir override in config file
+    var global_data_dir = known_folders.open(gpa, .data, .{}) catch |err| switch (err) {
+        error.OutOfMemory => return error.OutOfMemory,
+        else => return unexpecedError(err, ctx),
+    } orelse return unexpecedError(error.FileNotFound, ctx);
+    defer global_data_dir.close();
+
+    return global_data_dir.openDir(app_name, .{}) catch |err| switch (err) {
+        error.FileNotFound => {
+            global_data_dir.makeDir(app_name) catch |inner_err| switch (inner_err) {
+                error.PathAlreadyExists => {}, // Success?
+                else => return unexpecedError(inner_err, ctx),
+            };
+
+            return global_data_dir.openDir(app_name, .{}) catch |inner_err|
+                return unexpecedError(inner_err, ctx);
+        },
+        else => unexpecedError(err, ctx),
+    };
+}
+
+fn savesDir(ctx: *Context, opts: std.fs.Dir.OpenOptions) Error!Dir {
+    const app_data_dir = try appDataDir(ctx);
+
+    return app_data_dir.openDir(saves_folder, opts) catch |err| switch (err) {
+        error.FileNotFound => {
+            app_data_dir.makeDir(saves_folder) catch |inner_err| switch (inner_err) {
+                error.PathAlreadyExists => {}, // Success?
+                else => return unexpecedError(inner_err, ctx),
+            };
+
+            return app_data_dir.openDir(saves_folder, opts) catch |inner_err|
+                return unexpecedError(inner_err, ctx);
+        },
+        else => unexpecedError(err, ctx),
+    };
+}
+
+// TODO: mechanism to prune old saves
 fn saveFn(ctx: *Context) Error!void {
-    const file = std.fs.cwd().createFileZ("test.save", .{}) catch @panic("a");
+    const gpa = ctx.gpa;
+
+    const file: File = loop: while (true) {
+        var saves_dir = try savesDir(ctx, .{});
+        defer saves_dir.close();
+
+        const path = try std.fmt.allocPrint(gpa, "save-{d}", .{std.time.nanoTimestamp()});
+        defer gpa.free(path);
+
+        break :loop saves_dir.createFile(path, .{ .exclusive = true }) catch |err| switch (err) {
+            error.PathAlreadyExists => continue,
+            else => return unexpecedError(err, ctx),
+        };
+    };
     defer file.close();
 
     var buf: [1024]u8 = undefined;
     var file_writer: std.fs.File.Writer = .init(file, &buf);
 
-    ctx.save.serialize(&file_writer.interface) catch @panic("a");
+    ctx.save.serialize(&file_writer.interface) catch |err| switch (err) {
+        error.WriteFailed => return unexpecedError(file_writer.err.?, ctx),
+    };
 
-    file_writer.interface.flush() catch unreachable;
+    file_writer.interface.flush() catch |err| switch (err) {
+        error.WriteFailed => return unexpecedError(file_writer.err.?, ctx),
+    };
 
     try ctx.console.printLn("Saved {d} items!", .{ctx.save.items.len});
 }
 
 fn loadFn(ctx: *Context) Error!void {
-    const file = std.fs.cwd().openFileZ("test.save", .{}) catch @panic("a");
-    defer file.close();
+    const save = ctx.save;
+    const console = ctx.console;
+    const gpa = ctx.gpa;
 
-    var buf: [1024]u8 = undefined;
-    var file_reader: std.fs.File.Reader = .init(file, &buf);
+    var lowest_corrupted_save: u128 = std.math.maxInt(u128);
+    outer: while (true) {
+        var highest_seen_save: u128 = 0;
 
-    ctx.save.deinit(ctx.gpa);
-    ctx.save.* = Save.deserialize(ctx.gpa, &file_reader.interface) catch @panic("a");
+        const file: File = blk: {
+            var saves_dir = try savesDir(ctx, .{ .iterate = true });
+            defer saves_dir.close();
 
-    try ctx.console.printLn("Loaded {d} items!", .{ctx.save.items.len});
+            var file: ?File = null;
+
+            var it = saves_dir.iterate();
+            while (it.next() catch |err| switch (err) {
+                else => return unexpecedError(err, ctx),
+            }) |entry| {
+                switch (entry.kind) {
+                    .file => {},
+                    else => continue,
+                }
+
+                const pre, const post = std.mem.cut(u8, entry.name, "-") orelse continue;
+                if (!std.mem.eql(u8, "save", pre)) continue;
+
+                const num = std.fmt.parseInt(u128, post, 10) catch continue;
+
+                if (num <= highest_seen_save or num >= lowest_corrupted_save) continue;
+
+                const file_copy = file;
+
+                file = saves_dir.openFile(entry.name, .{}) catch continue;
+
+                highest_seen_save = num;
+                if (file_copy) |f| f.close();
+            }
+
+            break :blk file orelse {
+                try console.writeLn("No saves found");
+                return;
+            };
+        };
+        defer file.close();
+
+        var buf: [1024]u8 = undefined;
+        var file_reader: std.fs.File.Reader = .init(file, &buf);
+
+        // TODO: more corruption detection in saves
+        const new_save = Save.deserialize(gpa, &file_reader.interface) catch |err| switch (err) {
+            error.OutOfMemory => return error.OutOfMemory,
+            error.ReadFailed => return unexpecedError(file_reader.err.?, ctx),
+
+            error.Corrupt,
+            error.EndOfStream,
+            => {
+                std.log.err("Found corrupted save, ignoring", .{});
+                lowest_corrupted_save = highest_seen_save;
+                continue :outer;
+            },
+        };
+
+        save.deinit(gpa);
+        save.* = new_save;
+
+        try ctx.console.printLn("Loaded {d} items!", .{save.items.len});
+        return;
+    }
 }
 
 fn askFn(ctx: *Context) Error!void {
@@ -191,6 +313,7 @@ fn askFn(ctx: *Context) Error!void {
     defer questions.deinit(gpa);
 
     const srs_slice: []Save.Srs = save.items.items(.srs);
+    const stage_slice: []u8 = save.items.items(.stage);
 
     for (srs_slice, 0..) |srs, idx| {
         if (srs.timeUntil() != 0) continue;
@@ -221,20 +344,18 @@ fn askFn(ctx: *Context) Error!void {
             const answers = item.answers(save);
 
             const answer = try console.ask(&.{ question.bytes(st), "\n", prefix });
-            std.log.info("said: '{s}'", .{answer});
 
             const eql = std.ascii.eqlIgnoreCase;
             const correct = loop: for (answers) |ans| {
-                std.log.info("Checking: '{s}' ({d})", .{ ans.bytes(st), @intFromEnum(ans) });
                 if (eql(answer, ans.bytes(st))) {
                     break :loop true;
                 }
             } else false;
 
-            std.log.info("Correct: {}", .{correct});
-
             if (correct) {
-                srs_slice[idx] = srs_slice[idx].nextDeadline(round == 0);
+                const stage, const srs = Save.Srs.nextDeadline(stage_slice[idx], round == 0);
+                srs_slice[idx] = srs;
+                stage_slice[idx] = stage;
 
                 try console.writeLn("Correct!");
             } else {
@@ -309,12 +430,18 @@ fn listFn(ctx: *Context) Error!void {
     }
 }
 
+fn unexpecedError(err: anyerror, ctx: *Context) error{Unhandled} {
+    ctx.err = err;
+    return error.Unhandled;
+}
+
 test {
     _ = &Save;
     _ = &Console;
 }
 
 const std = @import("std");
+const known_folders = @import("known_folders");
 
 const assert = std.debug.assert;
 
@@ -327,3 +454,4 @@ const Writer = Io.Writer;
 const Config = Io.tty.Config;
 const Allocator = std.mem.Allocator;
 const ArrayList = std.ArrayList;
+const Dir = std.fs.Dir;

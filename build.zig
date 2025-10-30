@@ -4,11 +4,14 @@ pub fn build(b: *std.Build) void {
     const target = b.standardTargetOptions(.{});
     const optimize = b.standardOptimizeOption(.{});
 
+    const known_folders = b.dependency("known_folders", .{}).module("known-folders");
+
     const mod = b.createModule(.{
         .root_source_file = b.path("src/main.zig"),
         .target = target,
         .optimize = optimize,
     });
+    mod.addImport("known_folders", known_folders);
 
     const exe = b.addExecutable(.{
         .name = "srs",
