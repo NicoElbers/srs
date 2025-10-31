@@ -126,15 +126,13 @@ test hasSerializableLayout {
     try std.testing.expect(!hasSerializableLayout(extern union { foo: u32 }));
 }
 
-pub fn typeHash(comptime T: type) u64 {
+pub fn typeHashed(comptime T: type) u64 {
     var wh: Wyhash = .init(0);
-    typeHashInner(T, &wh);
+    typeHash(T, &wh);
     return wh.final();
 }
 
-fn typeHashInner(comptime T: type, h: *Wyhash) void {
-    comptime assert(hasSerializableLayout(T));
-
+pub fn typeHash(comptime T: type, h: *Wyhash) void {
     const update = struct {
         // This is a hacky mess, but it's not exposed so I don't really care
         pub fn update(hasher: *Wyhash, value: anytype) void {
@@ -164,7 +162,7 @@ fn typeHashInner(comptime T: type, h: *Wyhash) void {
 
         .@"enum" => |info| {
             update(h, 0x53e97517b5e47dc1);
-            typeHashInner(info.tag_type, h);
+            typeHash(info.tag_type, h);
         },
 
         .float => |info| {
@@ -177,85 +175,96 @@ fn typeHashInner(comptime T: type, h: *Wyhash) void {
             update(h, info.signedness);
         },
 
-        .pointer => |info| switch (info.size) {
-            .slice => {
-                update(h, 0x5770c238aa1efad2);
-                typeHashInner(info.child, h);
-            },
-            .one => {
-                update(h, 0xbe60bbed52a2f3fc);
-                typeHashInner(info.child, h);
-            },
-
-            .many,
-            .c,
-            => comptime unreachable,
+        .pointer => |info| {
+            update(h, 0x4074c124d170a19e);
+            update(h, info.size);
+            update(h, info.alignment);
+            typeHash(info.child, h);
         },
 
         .vector => |info| {
             update(h, 0xf6b9b4b652b746d5);
             update(info.len);
-            typeHashInner(info.child, h);
+            typeHash(info.child, h);
         },
         .array => |info| {
             update(h, 0xa808ae6440b45ce0);
             update(h, info.len);
-            typeHashInner(info.child, h);
+            typeHash(info.child, h);
         },
 
-        .@"struct" => |info| switch (info.layout) {
-            .@"packed" => {
-                update(h, 0x299ad13548400004);
-                typeHashInner(info.backing_integer.?, h);
+        .@"struct" => |info| {
+            update(h, 0x7cbb0290a9720c92);
 
-                inline for (sortStructFields(T)) |field| {
-                    update(h, field.name);
-                    typeHashInner(field.type, h);
-                }
-            },
+            // We switch here because:
+            // 1) packed and non packed have different serialization strategies
+            // 2) auto and extern should be interchangable
+            switch (info.layout) {
+                .@"packed" => {
+                    update(h, 0x92ef82ba7c4488ac);
+                    typeHash(info.backing_integer.?, h);
+                },
+                .auto, .@"extern" => {
+                    update(h, 0x34eb1692d96183c8);
+                },
+            }
 
-            .auto,
-            .@"extern",
-            => {
-                update(h, 0x9caab39bb20278ea);
-
-                inline for (sortStructFields(T)) |field| {
-                    update(h, field.name);
-                    typeHashInner(field.type, h);
-                }
-            },
+            inline for (sortStructFields(T)) |field| {
+                update(h, field.name);
+                typeHash(field.type, h);
+            }
         },
 
         .optional => |info| {
             update(h, 0x69d8119ec3c61182);
-            typeHashInner(info.child, h);
+            typeHash(info.child, h);
         },
 
-        .@"union" => |info| switch (info.layout) {
-            .@"extern", .@"packed" => comptime unreachable,
-            .auto => {
-                update(h, 0x1761c42833e3fc7a);
-                typeHashInner(info.tag_type.?, h);
+        .@"union" => |info| {
+            update(h, 0x1761c42833e3fc7a);
 
-                // NOTE: it's not fine to allow adding union variats because:
-                // 1) A new variant might be bigger requiring more space to
-                //    serialize
-                // 2) There is no way to sort the fields such that an arbitrary
-                //    new field will go to the end
+            // two of the layouts are non serializable, but we allow it in a
+            // typehash anyway
+            update(h, info.layout);
+            typeHash(info.tag_type.?, h);
 
-                inline for (sortUnionFields(T)) |field| {
-                    update(h, field.name);
-                    typeHashInner(field.type, h);
-                }
-            },
+            // NOTE: it's not fine to allow adding union variats because:
+            // 1) A new variant might be bigger requiring more space to
+            //    serialize
+            // 2) There is no way to sort the fields such that an arbitrary
+            //    new field will go to the end
+
+            inline for (sortUnionFields(T)) |field| {
+                update(h, field.name);
+                typeHash(field.type, h);
+            }
         },
 
-        else => comptime unreachable,
+        .type,
+        .comptime_float,
+        .comptime_int,
+        .enum_literal,
+        => comptime unreachable, // comptime only
+
+        .undefined,
+        .noreturn,
+        .@"anyframe",
+        => comptime unreachable, // as far as I'm aware, uninstanciable
+
+        .@"fn",
+        .@"opaque",
+        .frame,
+        .null,
+        => comptime unreachable, // undefined size
+
+        .error_union,
+        .error_set,
+        => comptime unreachable, // compilation unit dependent
     }
 }
 
-test typeHashInner {
-    const hash = typeHash;
+test typeHash {
+    const hash = typeHashed;
 
     try std.testing.expect(hash(void) == hash(void));
     try std.testing.expect(hash(void) != hash(u0));
@@ -269,6 +278,7 @@ test typeHashInner {
     try std.testing.expect(hash(*[5]u8) != hash(*[4]u8));
     try std.testing.expect(hash(*[5]u8) != hash(*[5]u16));
 
+    try std.testing.expect(hash(*[5]u8) == hash(*const [5]u8));
     try std.testing.expect(hash([]u8) == hash([]const u8));
 
     try std.testing.expect(hash(extern struct { foo: u8 }) != hash(extern struct { bar: u8 }));
