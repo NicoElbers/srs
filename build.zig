@@ -6,12 +6,19 @@ pub fn build(b: *std.Build) void {
 
     const known_folders = b.dependency("known_folders", .{}).module("known-folders");
 
+    const ser_mod = b.dependency("ser", .{
+        .target = target,
+    }).module("ser");
+
     const mod = b.createModule(.{
         .root_source_file = b.path("src/main.zig"),
         .target = target,
         .optimize = optimize,
+        .imports = &.{
+            .{ .name = "known_folders", .module = known_folders },
+            .{ .name = "ser", .module = ser_mod },
+        },
     });
-    mod.addImport("known_folders", known_folders);
 
     const exe = b.addExecutable(.{
         .name = "srs",

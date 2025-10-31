@@ -22,10 +22,10 @@ pub const StringTable = struct {
     /// * bytes: ArrayList(u8)
     /// * map: AutoArrayHashMap(String, StringItem)
     /// * string_counter: u32
-    pub fn serialize(st: *const StringTable, w: *Writer) SerializationError!void {
-        try serialization.serializeArrayList(u8, &st.bytes, w);
-        try serialization.serializeArrayHashMap(AutoArrayHashMap(String, StringItem), &st.map, w);
-        try w.writeInt(u32, st.string_counter, .little);
+    pub fn serialize(st: *const StringTable, w: *Writer) ser.serialize.Error!void {
+        try ser.serialize.arrayList(u8, &st.bytes, w);
+        try ser.serialize.arrayHashMap(AutoArrayHashMap(String, StringItem), &st.map, w);
+        try ser.serialize.value(u32, &st.string_counter, w);
     }
 
     /// Deserialize in the format:
@@ -34,14 +34,14 @@ pub const StringTable = struct {
     /// * bytes: ArrayList(u8)
     /// * map: AutoArrayHashMap(String, StringItem)
     /// * string_counter: u32
-    pub fn deserialize(gpa: Allocator, r: *Reader) DeserializationError!StringTable {
-        var bytes = try deserializeArrayList(u8, gpa, r);
+    pub fn deserialize(gpa: Allocator, r: *Reader) ser.deserialize.Error!StringTable {
+        var bytes = try ser.deserialize.arrayList(u8, gpa, r);
         errdefer bytes.deinit(gpa);
 
-        var map = try deserializeArrayHashMap(AutoArrayHashMap(String, StringItem), gpa, r);
+        var map = try ser.deserialize.arrayHashMap(AutoArrayHashMap(String, StringItem), gpa, r);
         errdefer map.deinit(gpa);
 
-        const string_counter = try r.takeInt(u32, .little);
+        const string_counter = try ser.deserialize.value(u32, gpa, r);
 
         return .{
             .bytes = bytes,
@@ -219,21 +219,9 @@ pub const String = enum(u32) {
 };
 
 const std = @import("std");
-const serialization = @import("serialization.zig");
+const ser = @import("ser");
 
 const assert = std.debug.assert;
-
-const serializeArrayList = serialization.serializeArrayList;
-const deserializeArrayList = serialization.deserializeArrayList;
-
-const serializeMultiArrayList = serialization.serializeMultiArrayList;
-const deserializeMultiArrayList = serialization.deserializeMultiArrayList;
-
-const serializeArrayHashMap = serialization.serializeArrayHashMap;
-const deserializeArrayHashMap = serialization.deserializeArrayHashMap;
-
-const SerializationError = serialization.SerializationError;
-const DeserializationError = serialization.DeserializationError;
 
 const ArrayList = std.ArrayList;
 const AutoArrayHashMap = std.AutoArrayHashMapUnmanaged;

@@ -32,12 +32,12 @@ pub fn deinit(s: *Save, gpa: Allocator) void {
 /// * extra: ArrayList(Untyped)
 /// * map: AutoArrayHashMap(Index, u32)
 /// * index_counter: u32
-pub fn serialize(save: *Save, w: *Writer) SerializationError!void {
+pub fn serialize(save: *Save, w: *Writer) ser.serialize.Error!void {
     try save.string_table.serialize(w);
-    try serializeMultiArrayList(Item, &save.items, w);
-    try serializeArrayList(Untyped, &save.extra, w);
-    try serializeArrayHashMap(AutoArrayHashMap(Index, u32), &save.map, w);
-    try w.writeInt(u32, save.index_counter, .little);
+    try ser.serialize.multiArrayList(Item, &save.items, w);
+    try ser.serialize.arrayList(Untyped, &save.extra, w);
+    try ser.serialize.arrayHashMap(AutoArrayHashMap(Index, u32), &save.map, w);
+    try ser.serialize.value(u32, &save.index_counter, w);
 }
 
 /// Deserialize in the format:
@@ -48,20 +48,20 @@ pub fn serialize(save: *Save, w: *Writer) SerializationError!void {
 /// * extra: ArrayList(Untyped)
 /// * map: AutoArrayHashMap(Index, u32)
 /// * index_counter: u32
-pub fn deserialize(gpa: Allocator, r: *Reader) DeserializationError!Save {
+pub fn deserialize(gpa: Allocator, r: *Reader) ser.deserialize.Error!Save {
     var string_table = try StringTable.deserialize(gpa, r);
     errdefer string_table.deinit(gpa);
 
-    var items = try deserializeMultiArrayList(Item, gpa, r);
+    var items = try ser.deserialize.multiArrayList(Item, gpa, r);
     errdefer items.deinit(gpa);
 
-    var extra = try deserializeArrayList(Untyped, gpa, r);
+    var extra = try ser.deserialize.arrayList(Untyped, gpa, r);
     errdefer extra.deinit(gpa);
 
-    var map = try deserializeArrayHashMap(AutoArrayHashMap(Index, u32), gpa, r);
+    var map = try ser.deserialize.arrayHashMap(AutoArrayHashMap(Index, u32), gpa, r);
     errdefer map.deinit(gpa);
 
-    const index_counter = try r.takeInt(u32, .little);
+    const index_counter = try ser.deserialize.value(u32, gpa, r);
 
     return .{
         .string_table = string_table,
@@ -447,21 +447,9 @@ test {
 
 const std = @import("std");
 const strings = @import("strings.zig");
-const serialization = @import("serialization.zig");
+const ser = @import("ser");
 
 const assert = std.debug.assert;
-
-const serializeArrayList = serialization.serializeArrayList;
-const deserializeArrayList = serialization.deserializeArrayList;
-
-const serializeMultiArrayList = serialization.serializeMultiArrayList;
-const deserializeMultiArrayList = serialization.deserializeMultiArrayList;
-
-const serializeArrayHashMap = serialization.serializeArrayHashMap;
-const deserializeArrayHashMap = serialization.deserializeArrayHashMap;
-
-const SerializationError = serialization.SerializationError;
-const DeserializationError = serialization.DeserializationError;
 
 const Allocator = std.mem.Allocator;
 const ArrayList = std.ArrayList;
