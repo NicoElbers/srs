@@ -453,6 +453,7 @@ pub fn deserialize(comptime T: type, gpa: Allocator, r: *Reader) Deserialization
                     .fromByteUnits(info.alignment),
                     info.sentinel(),
                 );
+                errdefer gpa.free(slice);
 
                 for (slice) |*elem| {
                     elem.* = try deserialize(info.child, gpa, r);
@@ -461,6 +462,8 @@ pub fn deserialize(comptime T: type, gpa: Allocator, r: *Reader) Deserialization
             },
             .one => {
                 const ptr = try gpa.create(info.child);
+                errdefer gpa.destroy(ptr);
+
                 ptr.* = try deserialize(info.child, gpa, r);
                 return ptr;
             },
