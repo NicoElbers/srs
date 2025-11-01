@@ -30,7 +30,7 @@ const commands = [_]Command{
     .{ .name = "exit", .func = exitFn },
 };
 
-pub fn main() !u8 {
+pub fn main() !void {
     var stdin_reader: File.Reader = .initStreaming(.stdin(), &stdin_buf);
     var stdout_writer: File.Writer = .initStreaming(.stdout(), &stdout_buf);
     const tty: std.Io.tty.Config = .detect(.stdout());
