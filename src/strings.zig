@@ -23,6 +23,7 @@ pub const StringTable = struct {
     /// * map: AutoArrayHashMap(String, StringItem)
     /// * string_counter: u32
     pub fn serialize(st: *const StringTable, w: *Writer) ser.serialize.Error!void {
+        try ser.serialize.value(u64, &ser.typeHashed(@This()), w);
         try ser.serialize.arrayList(u8, &st.bytes, w);
         try ser.serialize.arrayHashMap(AutoArrayHashMap(String, StringItem), &st.map, w);
         try ser.serialize.value(u32, &st.string_counter, w);
@@ -35,13 +36,17 @@ pub const StringTable = struct {
     /// * map: AutoArrayHashMap(String, StringItem)
     /// * string_counter: u32
     pub fn deserialize(gpa: Allocator, r: *Reader) ser.deserialize.Error!StringTable {
+        if (try ser.deserialize.valueNoAlloc(u64, r) != ser.typeHashed(@This())) {
+            return error.Corrupt;
+        }
+
         var bytes = try ser.deserialize.arrayList(u8, gpa, r);
         errdefer bytes.deinit(gpa);
 
         var map = try ser.deserialize.arrayHashMap(AutoArrayHashMap(String, StringItem), gpa, r);
         errdefer map.deinit(gpa);
 
-        const string_counter = try ser.deserialize.value(u32, gpa, r);
+        const string_counter = try ser.deserialize.valueNoAlloc(u32, r);
 
         return .{
             .bytes = bytes,

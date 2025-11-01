@@ -33,6 +33,7 @@ pub fn deinit(s: *Save, gpa: Allocator) void {
 /// * map: AutoArrayHashMap(Index, u32)
 /// * index_counter: u32
 pub fn serialize(save: *Save, w: *Writer) ser.serialize.Error!void {
+    try ser.serialize.value(u64, &ser.typeHashed(@This()), w);
     try save.string_table.serialize(w);
     try ser.serialize.multiArrayList(Item, &save.items, w);
     try ser.serialize.arrayList(Untyped, &save.extra, w);
@@ -49,6 +50,10 @@ pub fn serialize(save: *Save, w: *Writer) ser.serialize.Error!void {
 /// * map: AutoArrayHashMap(Index, u32)
 /// * index_counter: u32
 pub fn deserialize(gpa: Allocator, r: *Reader) ser.deserialize.Error!Save {
+    if (try ser.deserialize.valueNoAlloc(u64, r) != ser.typeHashed(@This())) {
+        return error.Corrupt;
+    }
+
     var string_table = try StringTable.deserialize(gpa, r);
     errdefer string_table.deinit(gpa);
 
@@ -61,7 +66,7 @@ pub fn deserialize(gpa: Allocator, r: *Reader) ser.deserialize.Error!Save {
     var map = try ser.deserialize.arrayHashMap(AutoArrayHashMap(Index, u32), gpa, r);
     errdefer map.deinit(gpa);
 
-    const index_counter = try ser.deserialize.value(u32, gpa, r);
+    const index_counter = try ser.deserialize.valueNoAlloc(u32, r);
 
     return .{
         .string_table = string_table,
