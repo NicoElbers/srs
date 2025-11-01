@@ -6,49 +6,6 @@ const prefix = "> ";
 const app_name = "srs"; // TODO: think of a better name
 const saves_folder = "saves";
 
-/// Entry point, aquires no resources by itself and does some nice error handling
-pub fn main() void {
-    var stdin_reader: File.Reader = .initStreaming(.stdin(), &stdin_buf);
-    var stdout_writer: File.Writer = .initStreaming(.stdout(), &stdout_buf);
-    const tty: std.Io.tty.Config = .detect(.stdout());
-
-    cliWrapper(
-        &stdin_reader.interface,
-        &stdout_writer.interface,
-        tty,
-    ) catch |err| switch (err) {
-        error.EndOfStream => std.process.exit(1), // just exit, don't report
-        error.WriteFailed => {
-            if (@errorReturnTrace()) |st| {
-                std.debug.dumpStackTrace(st);
-            }
-
-            std.process.fatal("stdout errored with {t}", .{stdout_writer.err.?});
-        },
-        error.ReadFailed => {
-            if (@errorReturnTrace()) |st| {
-                std.debug.dumpStackTrace(st);
-            }
-
-            std.process.fatal("stdin errored with {t}", .{stdin_reader.err.?});
-        },
-        error.OutOfMemory => {
-            if (@errorReturnTrace()) |st| {
-                std.debug.dumpStackTrace(st);
-            }
-
-            std.process.fatal("Out Of memory", .{});
-        },
-        else => {
-            if (@errorReturnTrace()) |st| {
-                std.debug.dumpStackTrace(st);
-            }
-
-            std.process.fatal("Encountered an unexpected fatal error: {t}", .{err});
-        },
-    };
-}
-
 const Context = struct {
     gpa: Allocator,
     console: *Console,
@@ -73,12 +30,11 @@ const commands = [_]Command{
     .{ .name = "exit", .func = exitFn },
 };
 
-/// This function wraps all resource allocation
-fn cliWrapper(
-    stdin: *Reader,
-    stdout: *Writer,
-    tty: Config,
-) !void {
+pub fn main() !u8 {
+    var stdin_reader: File.Reader = .initStreaming(.stdin(), &stdin_buf);
+    var stdout_writer: File.Writer = .initStreaming(.stdout(), &stdout_buf);
+    const tty: std.Io.tty.Config = .detect(.stdout());
+
     var dbg_inst: std.heap.DebugAllocator(.{}) = .init;
     defer _ = dbg_inst.deinit();
     const gpa = dbg_inst.allocator();
@@ -86,7 +42,11 @@ fn cliWrapper(
     var save: Save = .empty;
     defer save.deinit(gpa);
 
-    var console: Console = .init(stdin, stdout, tty);
+    var console: Console = .init(
+        &stdin_reader.interface,
+        &stdout_writer.interface,
+        tty,
+    );
     defer console.deinit();
 
     var ctx: Context = .{
@@ -97,12 +57,35 @@ fn cliWrapper(
         .err = null,
     };
 
-    cliCommandLoop(&ctx) catch |err| return switch (err) {
-        error.Unhandled => ctx.err orelse err,
-        else => err,
+    cliCommandLoop(&ctx) catch |err| {
+        const saved_err = ctx.err; // can't let this final save override it
+
+        saveFn(&ctx) catch |e| switch (e) {
+            error.ReadFailed => {},
+            error.WriteFailed => {},
+            else => stdout_writer.interface.print("Error: Failed to save: {t}\n", .{e}) catch {},
+        };
+
+        console.flush() catch {};
+
+        return switch (err) {
+            error.Unhandled => saved_err orelse error.Unknown,
+            error.ReadFailed => stdin_reader.err.?,
+            error.WriteFailed => stdout_writer.err.?,
+            error.EndOfStream => std.process.exit(1), // exit quietly, but with code 1
+            error.OutOfMemory => error.OutOfMemory,
+        };
     };
 
-    try console.flush();
+    console.flush() catch return stdout_writer.err.?;
+
+    saveFn(&ctx) catch |err| return switch (err) {
+        error.Unhandled => ctx.err orelse error.Unknown,
+        error.ReadFailed => stdin_reader.err.?,
+        error.WriteFailed => stdout_writer.err.?,
+        error.EndOfStream => std.process.exit(1), // exit quietly, but with code 1
+        error.OutOfMemory => error.OutOfMemory,
+    };
 }
 
 pub const Error = Reader.Error || Writer.Error || Allocator.Error || error{Unhandled};
