@@ -9,8 +9,8 @@
             .hash = "known_folders-0.0.0-Fy-PJtTTAADUOhGKM0sxzG4eMkNQxRvx9e5dfHVyaeA3",
         },
         .ser = .{
-            .url = "git+https://github.com/NicoElbers/ser-zig.git#bc395cd2183c2ae595a607f996c618f635437893",
-            .hash = "ser-0.0.1-Y0ajQIKAAAA65dRyGnHpHOEXY9LvDfFaycUBkWhvG6LQ",
+            .url = "git+https://github.com/NicoElbers/ser-zig.git#64686433204f136e1ca2787e49fd20312c36b4a9",
+            .hash = "ser-0.0.1-Y0ajQHizAADsdEcho8ppE3Y1a54KiodnROfkZm7qDWfW",
         },
     },
     .paths = .{
